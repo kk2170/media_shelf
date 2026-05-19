@@ -11,6 +11,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,12 +36,23 @@ jobs:
           projectPath: src-tauri
           args: --verbose
 
-      - name: Upload to release
+      - name: Upload Windows binary to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = git describe --tags --abbrev=0
+          $tag = git tag --sort=-version:refname | Select-Object -First 1
+          if (-not $tag) {
+            $tag = "v0.2.0"
+          }
+          Write-Host "Uploading to release: $tag"
+          
           $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -Recurse | Select-Object -First 1
           if ($exe) {
-            gh release upload $tag $exe.FullName --clobber
+            Write-Host "Found: $($exe.FullName)"
+            gh release upload $tag "$($exe.FullName)" --clobber
+            Write-Host "Upload complete"
+          } else {
+            Write-Host "No .exe found in release directory"
+            Get-ChildItem -Path "src-tauri/target/release" -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host $_.FullName }
+            exit 1
           }
