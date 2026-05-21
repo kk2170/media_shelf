@@ -330,75 +330,14 @@ pub fn import_media_folder(app: AppHandle, folder_path: String) -> Result<Import
 
             total_scanned += 1;
 
-            let source_path = canonical_path.to_string_lossy().to_string();
-            let already_imported: bool = transaction
-                .query_row(
-                    "SELECT EXISTS(
-                        SELECT 1 FROM media WHERE source_path = ?1 OR (source_path IS NULL AND file_path = ?1)
-                    )",
-                    [&source_path],
-                    |row| row.get(0),
-                )
-                .map_err(|error| error.to_string())?;
-
-            if already_imported {
-                continue;
-            }
-
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-            let mime_type = guess_mime_type(&canonical_path);
-            let managed_file_path =
-                copy_into_managed_library(&canonical_root, &canonical_path, &import_directory)
-                    .map_err(|error| error.to_string())?;
-            let file_path = managed_file_path.to_string_lossy().to_string();
-            let (thumbnail_path, metadata_json) = if file_type == "comic" {
-                import_comic_archive(&managed_file_path, &import_directory).map_err(|error| error.to_string())?
-            } else {
-                (None, None)
-            };
-
-            let changed = transaction
-                .execute(
-                    "INSERT INTO media (
-                        file_path,
-                        source_path,
-                        source_url,
-                        source_title,
-                        file_name,
-                        file_type,
-                        mime_type,
-                        width,
-                        height,
-                        duration_seconds,
-                        file_size,
-                        file_hash,
-                        thumbnail_path,
-                        imported_at,
-                        created_at,
-                        metadata_json,
-                        series_name,
-                        completed_at,
-                        last_viewed_at
-                    ) VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, NULL, NULL, NULL, ?6, NULL, ?7, ?8, NULL, ?9, NULL, NULL, NULL)",
-                    params![
-                        file_path,
-                        source_path,
-                        file_name,
-                        file_type,
-                        mime_type,
-                        file_size,
-                        thumbnail_path,
-                        imported_at,
-                        metadata_json
-                    ],
-                )
-                .map_err(|error| error.to_string())?;
-
-            total_imported += changed;
+            total_imported += insert_media_record(
+                &transaction,
+                &canonical_root,
+                &canonical_path,
+                &import_directory,
+                &imported_at,
+                file_type,
+            )?;
         }
 
         Ok(())
@@ -426,6 +365,142 @@ pub fn import_media_folder(app: AppHandle, folder_path: String) -> Result<Import
         total_imported,
         media_items,
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn import_media_file(app: AppHandle, file_path: String) -> Result<ImportMediaResult, String> {
+    let path = PathBuf::from(&file_path);
+    if !path.is_file() {
+        return Err("選択されたパスはファイルではありません。".to_string());
+    }
+
+    let canonical_path = fs::canonicalize(&path).unwrap_or(path.clone());
+    let Some(file_type) = detect_media_type(&canonical_path) else {
+        return Err("対応している画像または動画ファイルを選択してください。".to_string());
+    };
+
+    if file_type == "comic" {
+        return Err("単一ファイル取り込みは画像・動画専用です。漫画はフォルダ取り込みを利用してください。".to_string());
+    }
+
+    let managed_media_root = db::managed_media_root(&app).map_err(|error| error.to_string())?;
+    let mut connection = db::connect(&app).map_err(|error| error.to_string())?;
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let imported_at = current_timestamp_string();
+    let import_directory = managed_media_root.join(format!(
+        "{}__{}",
+        current_timestamp_nonce_string(),
+        sanitize_path_segment(
+            canonical_path
+                .file_stem()
+                .and_then(|segment| segment.to_str())
+                .unwrap_or("media_file")
+        )
+    ));
+    fs::create_dir_all(&import_directory).map_err(|error| error.to_string())?;
+
+    let total_imported = insert_media_record(
+        &transaction,
+        &canonical_path,
+        &canonical_path,
+        &import_directory,
+        &imported_at,
+        file_type,
+    )?;
+
+    if let Err(error) = transaction.commit() {
+        let _ = fs::remove_dir_all(&import_directory);
+        return Err(error.to_string());
+    }
+
+    if total_imported == 0 {
+        let _ = fs::remove_dir_all(&import_directory);
+    }
+
+    let media_items = list_media_items(&connection).map_err(|error| error.to_string())?;
+
+    Ok(ImportMediaResult {
+        folder_path: file_path,
+        total_scanned: 1,
+        total_imported,
+        media_items,
+    })
+}
+
+fn insert_media_record(
+    transaction: &rusqlite::Transaction<'_>,
+    root: &Path,
+    canonical_path: &Path,
+    import_directory: &Path,
+    imported_at: &str,
+    file_type: &str,
+) -> Result<usize, String> {
+    let source_path = canonical_path.to_string_lossy().to_string();
+    let already_imported: bool = transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM media WHERE source_path = ?1 OR (source_path IS NULL AND file_path = ?1)
+            )",
+            [&source_path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    if already_imported {
+        return Ok(0);
+    }
+
+    let metadata = fs::metadata(canonical_path).map_err(|error| error.to_string())?;
+    let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    let mime_type = guess_mime_type(canonical_path);
+    let managed_file_path =
+        copy_into_managed_library(root, canonical_path, import_directory).map_err(|error| error.to_string())?;
+    let file_path = managed_file_path.to_string_lossy().to_string();
+    let (thumbnail_path, metadata_json) = if file_type == "comic" {
+        import_comic_archive(&managed_file_path, import_directory).map_err(|error| error.to_string())?
+    } else {
+        (None, None)
+    };
+
+    transaction
+        .execute(
+            "INSERT INTO media (
+                file_path,
+                source_path,
+                source_url,
+                source_title,
+                file_name,
+                file_type,
+                mime_type,
+                width,
+                height,
+                duration_seconds,
+                file_size,
+                file_hash,
+                thumbnail_path,
+                imported_at,
+                created_at,
+                metadata_json,
+                series_name,
+                completed_at,
+                last_viewed_at
+            ) VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, NULL, NULL, NULL, ?6, NULL, ?7, ?8, NULL, ?9, NULL, NULL, NULL)",
+            params![
+                file_path,
+                source_path,
+                canonical_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("file"),
+                file_type,
+                mime_type,
+                file_size,
+                thumbnail_path,
+                imported_at,
+                metadata_json
+            ],
+        )
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]

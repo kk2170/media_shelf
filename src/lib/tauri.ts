@@ -25,6 +25,22 @@ export async function pickImportDirectory() {
   return typeof selected === 'string' ? selected : null;
 }
 
+export async function pickImportFile() {
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: '取り込む画像または動画を選択',
+    filters: [
+      {
+        name: 'Media files',
+        extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'avif', 'heic', 'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi']
+      }
+    ]
+  });
+
+  return typeof selected === 'string' ? selected : null;
+}
+
 export async function loadMediaItems() {
   return invoke<MediaItem[]>('load_media_items');
 }
@@ -35,6 +51,10 @@ export async function loadLibrarySnapshot() {
 
 export async function importMediaFolder(folderPath: string) {
   return invoke<ImportMediaResult>('import_media_folder', { folderPath });
+}
+
+export async function importMediaFile(filePath: string) {
+  return invoke<ImportMediaResult>('import_media_file', { filePath });
 }
 
 export async function createTagCategory(name: string, color: string | null) {

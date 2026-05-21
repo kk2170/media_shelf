@@ -5,13 +5,16 @@
   import MediaViewer from '$lib/components/MediaViewer.svelte';
   import TagEditor from '$lib/components/TagEditor.svelte';
   import TagFilterPanel from '$lib/components/TagFilterPanel.svelte';
+  import { mediaPreviews } from '$lib/stores/mediaPreviewStore';
   import type { MediaItem } from '$lib/types';
   import {
     createTag,
     createTagCategory,
+    importMediaFile,
     importMediaFolder,
     isTauriApp,
     loadLibrarySnapshot,
+    pickImportFile,
     pickImportDirectory,
     setComicProgress,
     setMediaSeries,
@@ -36,6 +39,11 @@
   let searchQuery = '';
   let comicReadFilter: 'all' | 'unread' | 'reading' | 'completed' = 'all';
   let seriesFilter: string = 'all';
+  let typeFilter: 'all' | 'image' | 'video' | 'comic' = 'all';
+  let orientationFilter: 'all' | 'portrait' | 'landscape' | 'square' = 'all';
+  let durationFilter: 'all' | 'short' | 'medium' | 'long' = 'all';
+  let resolutionFilter: 'all' | 'small' | 'medium' | 'large' = 'all';
+  let folderFilter = 'all';
   let selectedFilterTagIds: number[] = [];
   let filteredMediaItems: MediaItem[] = [];
   let selectedMediaTagIds: number[] = [];
@@ -65,9 +73,83 @@
     return 'reading';
   }
 
+  function itemSearchText(item: MediaItem) {
+    return [
+      displayName(item),
+      item.fileName,
+      item.seriesName ?? '',
+      item.sourcePath ?? '',
+      item.filePath,
+      item.mimeType ?? '',
+      item.fileType
+    ]
+      .join(' ')
+      .toLocaleLowerCase('ja-JP');
+  }
+
+  function itemOrientation(item: MediaItem): 'portrait' | 'landscape' | 'square' | 'unknown' {
+    const preview = $mediaPreviews[item.id];
+    if (preview?.width == null || preview?.height == null) {
+      return 'unknown';
+    }
+
+    if (preview.width === preview.height) {
+      return 'square';
+    }
+
+    return preview.width > preview.height ? 'landscape' : 'portrait';
+  }
+
+  function itemDurationBucket(item: MediaItem): 'short' | 'medium' | 'long' | 'unknown' {
+    const durationSeconds = $mediaPreviews[item.id]?.durationSeconds;
+    if (durationSeconds == null || !Number.isFinite(durationSeconds)) {
+      return 'unknown';
+    }
+
+    if (durationSeconds < 5 * 60) {
+      return 'short';
+    }
+
+    if (durationSeconds < 20 * 60) {
+      return 'medium';
+    }
+
+    return 'long';
+  }
+
+  function itemResolutionBucket(item: MediaItem): 'small' | 'medium' | 'large' | 'unknown' {
+    const preview = $mediaPreviews[item.id];
+    if (preview?.width == null || preview?.height == null) {
+      return 'unknown';
+    }
+
+    const pixels = preview.width * preview.height;
+    if (pixels < 1280 * 720) {
+      return 'small';
+    }
+
+    if (pixels < 2560 * 1440) {
+      return 'medium';
+    }
+
+    return 'large';
+  }
+
+  function itemFolderPath(item: MediaItem) {
+    const rawPath = item.sourcePath ?? item.filePath;
+    const normalizedPath = rawPath.replace(/\\/g, '/');
+    const lastSlashIndex = normalizedPath.lastIndexOf('/');
+    return lastSlashIndex > 0 ? normalizedPath.slice(0, lastSlashIndex) : normalizedPath;
+  }
+
   $: filteredMediaItems = $mediaItems.filter((item) =>
     selectedFilterTagIds.every((tagId) => item.tagIds.includes(tagId)) &&
-    `${displayName(item)} ${item.fileName}`.toLocaleLowerCase('ja-JP').includes(searchQuery.trim().toLocaleLowerCase('ja-JP')) &&
+    itemSearchText(item).includes(searchQuery.trim().toLocaleLowerCase('ja-JP')) &&
+    (typeFilter === 'all' || item.fileType === typeFilter) &&
+    (orientationFilter === 'all' || itemOrientation(item) === orientationFilter) &&
+    (durationFilter === 'all' || (item.fileType === 'video' && itemDurationBucket(item) === durationFilter)) &&
+    (resolutionFilter === 'all' || (item.fileType === 'image' && itemResolutionBucket(item) === resolutionFilter)) &&
+    (folderFilter === 'all' || itemFolderPath(item) === folderFilter) &&
     (comicReadFilter === 'all' || comicReadStatus(item) === comicReadFilter) &&
     (seriesFilter === 'all' || item.seriesName === seriesFilter)
   );
@@ -136,6 +218,35 @@
       lastImportSummary = `${result.totalScanned} 件検出 / ${result.totalImported} 件を新規登録`;
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'フォルダ取り込みに失敗しました。';
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function handleImportFile() {
+    if (!isTauriApp()) {
+      errorMessage = 'ファイル取り込みは Tauri デスクトップアプリで実行してください。';
+      return;
+    }
+
+    errorMessage = '';
+
+    const filePath = await pickImportFile();
+    if (!filePath) {
+      runtimeLabel = 'ファイル選択をキャンセルしました。';
+      return;
+    }
+
+    busy = true;
+    runtimeLabel = `取り込み中: ${filePath}`;
+
+    try {
+      const result = await importMediaFile(filePath);
+      setMediaItems(result.mediaItems);
+      runtimeLabel = `${filePath} を取り込みました。`;
+      lastImportSummary = result.totalImported > 0 ? '1 件を新規登録' : 'すでに登録済みのため追加はありません';
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'ファイル取り込みに失敗しました。';
     } finally {
       busy = false;
     }
@@ -272,6 +383,26 @@
     seriesFilter = event.detail.filter;
   }
 
+  function handleTypeFilter(event: CustomEvent<{ filter: 'all' | 'image' | 'video' | 'comic' }>) {
+    typeFilter = event.detail.filter;
+  }
+
+  function handleOrientationFilter(event: CustomEvent<{ filter: 'all' | 'portrait' | 'landscape' | 'square' }>) {
+    orientationFilter = event.detail.filter;
+  }
+
+  function handleDurationFilter(event: CustomEvent<{ filter: 'all' | 'short' | 'medium' | 'long' }>) {
+    durationFilter = event.detail.filter;
+  }
+
+  function handleResolutionFilter(event: CustomEvent<{ filter: 'all' | 'small' | 'medium' | 'large' }>) {
+    resolutionFilter = event.detail.filter;
+  }
+
+  function handleFolderFilter(event: CustomEvent<{ filter: string }>) {
+    folderFilter = event.detail.filter;
+  }
+
   async function handleUpdateSeries(event: CustomEvent<{ mediaId: number; seriesName: string }>) {
     if (!isTauriApp()) {
       return;
@@ -296,7 +427,7 @@
     const item = event.detail;
     setSelectedMediaId(item.id);
 
-    if (!isTauriApp() || item.fileType !== 'comic') {
+    if (!isTauriApp()) {
       return;
     }
 
@@ -326,7 +457,7 @@
       <h1>Media Shelf</h1>
       <p>
         ローカルメディアを「人物」「作品」「用途」などの意味付きタグで管理するための
-        Tauri + Svelte + SQLite の土台を作成しました。画像・動画に加えて、漫画ZIPも扱えます。
+        Tauri + Svelte + SQLite のライブラリアプリです。画像・動画・漫画を同じ棚で整理できます。
       </p>
     </div>
 
@@ -335,11 +466,11 @@
       <ul>
         <li>SQLiteスキーマ追加</li>
         <li>取り込み時にアプリ管理フォルダへコピー保存</li>
-        <li>フォルダ選択 + 画像/動画スキャン</li>
-        <li>ZIP / CBZ 漫画の取り込みとページ送り閲覧</li>
+        <li>フォルダ選択 + 画像 / 動画 / 漫画スキャン</li>
+        <li>画像表示・動画再生・漫画ZIPページ送り閲覧</li>
         <li>SQLite保存済みライブラリの一覧表示</li>
         <li>タグカテゴリ作成・タグ作成・タグ付け</li>
-        <li>タグ絞り込み検索</li>
+        <li>タグ・種別・向き・シリーズ検索</li>
       </ul>
       <p class="summary">{lastImportSummary}</p>
     </div>
@@ -374,13 +505,24 @@
         runtimeLabel={runtimeLabel}
         selectedId={$selectedMediaId}
         comicReadFilter={comicReadFilter}
+        durationFilter={durationFilter}
+        folderFilter={folderFilter}
+        typeFilter={typeFilter}
+        orientationFilter={orientationFilter}
+        resolutionFilter={resolutionFilter}
         seriesFilter={seriesFilter}
         searchQuery={searchQuery}
         on:comicFilter={handleComicFilter}
+        on:durationFilter={handleDurationFilter}
+        on:folderFilter={handleFolderFilter}
         on:import={handleImport}
+        on:importFile={handleImportFile}
+        on:orientationFilter={handleOrientationFilter}
+        on:resolutionFilter={handleResolutionFilter}
         on:search={handleSearch}
         on:select={handleSelectItem}
         on:seriesFilter={handleSeriesFilter}
+        on:typeFilter={handleTypeFilter}
       />
       <MediaViewer
         item={$selectedMedia}

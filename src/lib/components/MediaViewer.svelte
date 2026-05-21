@@ -82,6 +82,36 @@
     return isComic(currentItem) && currentItem.sourceTitle ? currentItem.sourceTitle : currentItem.fileName;
   }
 
+  function mediaTypeLabel(currentItem: MediaItem | null) {
+    if (currentItem?.fileType === 'video') return '動画';
+    if (currentItem?.fileType === 'comic') return '漫画';
+    return '画像';
+  }
+
+  function orientationLabel(currentItem: MediaItem | null) {
+    const preview = getPreview(currentItem);
+    if (preview?.width == null || preview?.height == null) {
+      return '不明';
+    }
+
+    if (preview.width === preview.height) {
+      return '正方形';
+    }
+
+    return preview.width > preview.height ? '横長' : '縦長';
+  }
+
+  function sourceDirectory(currentItem: MediaItem | null) {
+    const path = currentItem?.sourcePath ?? currentItem?.filePath;
+    if (!path) {
+      return '不明';
+    }
+
+    const normalized = path.replace(/\\/g, '/');
+    const lastSlashIndex = normalized.lastIndexOf('/');
+    return lastSlashIndex > 0 ? normalized.slice(0, lastSlashIndex) : normalized;
+  }
+
   function comicReadStatus(currentItem: MediaItem | null): 'unread' | 'reading' | 'completed' | null {
     if (!isComic(currentItem)) {
       return null;
@@ -260,59 +290,125 @@
         {/if}
       </div>
 
-      <strong>{displayName(item)}</strong>
-      {#if isComic(item) && item.sourceTitle}
-        <small>元ファイル名: {item.fileName}</small>
-      {/if}
-      <span>{item.fileType === 'video' ? '動画' : item.fileType === 'comic' ? '漫画ZIP' : '画像'}</span>
-      {#if isComic(item)}
-        <span>状態: {comicReadStatusLabel(item)}</span>
-        <span>ページ数: {preview?.pageCount ?? item.pageCount ?? '不明'}</span>
-      {:else if preview?.width != null && preview?.height != null}
-        <span>解像度: {preview.width} × {preview.height}</span>
-      {/if}
-      {#if item.fileType === 'video'}
-        <span>長さ: {formatDuration(preview?.durationSeconds)}</span>
-      {/if}
-      <span>管理方式: {item.sourcePath ? 'コピー管理' : '外部参照（旧データ）'}</span>
-      <span>サイズ: {formatFileSize(item.fileSize)}</span>
-      <span>取り込み時刻: {formatImportedAt(item.importedAt)}</span>
-      {#if item.completedAt}
-        <span>読了時刻: {formatImportedAt(item.completedAt)}</span>
-      {/if}
-      {#if item.lastViewedAt}
-        <span>最終閲覧: {formatImportedAt(item.lastViewedAt)}</span>
-      {/if}
-      {#if isComic(item)}
-        <div class="source-block">
-          <strong>シリーズ名</strong>
-          <div class="source-form">
-            <input bind:value={seriesNameInput} placeholder="シリーズ名を入力" />
-            <button disabled={busy || seriesNameInput.trim().length === 0} on:click={submitSeriesName}>
-              保存
-            </button>
-          </div>
-          {#if item.seriesName}
-            <span>シリーズ: {item.seriesName}</span>
+      <div class="viewer-heading">
+        <div>
+          <strong>{displayName(item)}</strong>
+          {#if isComic(item) && item.sourceTitle}
+            <small>元ファイル名: {item.fileName}</small>
           {/if}
         </div>
-        <div class="source-block">
-          <strong>漫画の元URL / タイトル</strong>
-          <div class="source-form">
-            <input bind:value={sourceUrlInput} placeholder="漫画ページのURLを貼り付け" />
-            <button disabled={busy || sourceUrlInput.trim().length === 0} on:click={submitSourceUrl}>
-              {busy ? '取得中...' : 'タイトル取得'}
-            </button>
+        <span class={`type-pill ${item.fileType}`}>{mediaTypeLabel(item)}</span>
+      </div>
+
+      <div class="info-section">
+        <h3>基本情報</h3>
+        <div class="fact-grid">
+          <div class="fact-card">
+            <small>種別</small>
+            <strong>{mediaTypeLabel(item)}</strong>
           </div>
-          {#if item.sourceTitle}
-            <span>タイトル: {item.sourceTitle}</span>
+          <div class="fact-card">
+            <small>サイズ</small>
+            <strong>{formatFileSize(item.fileSize)}</strong>
+          </div>
+          <div class="fact-card">
+            <small>管理方式</small>
+            <strong>{item.sourcePath ? 'コピー管理' : '外部参照（旧データ）'}</strong>
+          </div>
+          <div class="fact-card">
+            <small>保存元フォルダ</small>
+            <strong>{sourceDirectory(item)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-section">
+        <h3>メディア情報</h3>
+        <div class="fact-grid">
+          <div class="fact-card">
+            <small>向き</small>
+            <strong>{orientationLabel(item)}</strong>
+          </div>
+          {#if preview?.width != null && preview?.height != null}
+            <div class="fact-card">
+              <small>解像度</small>
+              <strong>{preview.width} × {preview.height}</strong>
+            </div>
           {/if}
-          {#if item.sourceUrl}
-            <small>URL: {item.sourceUrl}</small>
+          {#if item.fileType === 'video'}
+            <div class="fact-card">
+              <small>長さ</small>
+              <strong>{formatDuration(preview?.durationSeconds)}</strong>
+            </div>
           {/if}
-          {#if progressMessage}
-            <small class="progress-message">{progressMessage}</small>
+          {#if isComic(item)}
+            <div class="fact-card">
+              <small>読書状態</small>
+              <strong>{comicReadStatusLabel(item)}</strong>
+            </div>
+            <div class="fact-card">
+              <small>ページ数</small>
+              <strong>{preview?.pageCount ?? item.pageCount ?? '不明'}</strong>
+            </div>
           {/if}
+        </div>
+      </div>
+
+      <div class="info-section">
+        <h3>履歴</h3>
+        <div class="fact-grid">
+          <div class="fact-card">
+            <small>取り込み時刻</small>
+            <strong>{formatImportedAt(item.importedAt)}</strong>
+          </div>
+          {#if item.lastViewedAt}
+            <div class="fact-card">
+              <small>最終閲覧</small>
+              <strong>{formatImportedAt(item.lastViewedAt)}</strong>
+            </div>
+          {/if}
+          {#if item.completedAt}
+            <div class="fact-card">
+              <small>読了時刻</small>
+              <strong>{formatImportedAt(item.completedAt)}</strong>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      {#if isComic(item)}
+        <div class="info-section">
+          <h3>漫画向け情報</h3>
+          <div class="source-block">
+            <strong>シリーズ名</strong>
+            <div class="source-form">
+              <input bind:value={seriesNameInput} placeholder="シリーズ名を入力" />
+              <button disabled={busy || seriesNameInput.trim().length === 0} on:click={submitSeriesName}>
+                保存
+              </button>
+            </div>
+            {#if item.seriesName}
+              <span>シリーズ: {item.seriesName}</span>
+            {/if}
+          </div>
+          <div class="source-block">
+            <strong>漫画の元URL / タイトル</strong>
+            <div class="source-form">
+              <input bind:value={sourceUrlInput} placeholder="漫画ページのURLを貼り付け" />
+              <button disabled={busy || sourceUrlInput.trim().length === 0} on:click={submitSourceUrl}>
+                {busy ? '取得中...' : 'タイトル取得'}
+              </button>
+            </div>
+            {#if item.sourceTitle}
+              <span>タイトル: {item.sourceTitle}</span>
+            {/if}
+            {#if item.sourceUrl}
+              <small>URL: {item.sourceUrl}</small>
+            {/if}
+            {#if progressMessage}
+              <small class="progress-message">{progressMessage}</small>
+            {/if}
+          </div>
         </div>
       {/if}
       {#if item.sourcePath}
@@ -348,10 +444,79 @@
   .placeholder,
   .viewer-card {
     display: grid;
-    gap: 0.4rem;
+    gap: 0.85rem;
     padding: 1.2rem;
     border-radius: 16px;
     background: rgba(30, 41, 59, 0.72);
+  }
+
+  .viewer-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .viewer-heading strong {
+    display: block;
+  }
+
+  .type-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    color: #e2e8f0;
+    background: rgba(30, 41, 59, 0.95);
+  }
+
+  .type-pill.image {
+    background: rgba(22, 101, 52, 0.9);
+  }
+
+  .type-pill.video {
+    background: rgba(3, 105, 161, 0.9);
+  }
+
+  .type-pill.comic {
+    background: rgba(91, 33, 182, 0.9);
+  }
+
+  .info-section {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .info-section h3 {
+    margin: 0;
+    font-size: 0.92rem;
+    color: #e2e8f0;
+  }
+
+  .fact-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.65rem;
+  }
+
+  .fact-card {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.8rem 0.9rem;
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.45);
+    border: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .fact-card small {
+    color: #94a3b8;
+  }
+
+  .fact-card strong {
+    color: #f8fafc;
+    font-size: 0.92rem;
+    word-break: break-word;
   }
 
   .placeholder {

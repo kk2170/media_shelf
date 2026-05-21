@@ -9,6 +9,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             media_scan::create_tag,
             media_scan::create_tag_category,
+            media_scan::import_media_file,
             media_scan::import_media_folder,
             media_scan::load_comic_pages,
             media_scan::load_library_snapshot,
